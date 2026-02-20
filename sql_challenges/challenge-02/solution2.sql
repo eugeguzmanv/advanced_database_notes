@@ -1,6 +1,5 @@
 1. SELECT DISTINCT buildings.building_name FROM buildings
-    JOIN employees
-    WHERE employees.building = buildings.building_name;
+    JOIN employees ON employees.building = buildings.building_name;
 
 2. SELECT * FROM buildings;
 
