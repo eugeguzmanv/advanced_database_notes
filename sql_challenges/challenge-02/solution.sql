@@ -1,4 +1,4 @@
-1. SELECT *, MAX(Years_employed) AS longest_empoyee FROM Employees;
+1. SELECT *, MAX(Years_employed) AS longest_employee FROM Employees;
 
 2. SELECT Role, AVG(Years_employed) AS avg_by_role FROM Employees GROUP BY Role;
 
