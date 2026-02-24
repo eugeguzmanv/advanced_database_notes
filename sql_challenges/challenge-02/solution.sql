@@ -1,13 +1,5 @@
-1. SELECT movies.title, bo.Domestic_sales, bo.International_sales
-   FROM movies
-   INNER JOIN Boxoffice AS bo ON movies.id = bo.Movie_id;
+1. SELECT *, MAX(Years_employed) AS longest_empoyee FROM Employees;
 
-2. SELECT movies.title, bo.Domestic_sales, bo.International_sales
-   FROM movies
-   INNER JOIN Boxoffice AS bo ON movies.id = bo.Movie_id
-   WHERE bo.International_sales > bo.Domestic_sales;
+2. SELECT Role, AVG(Years_employed) AS avg_by_role FROM Employees GROUP BY Role;
 
-3. SELECT movies.title, bo.Rating
-   FROM movies
-   INNER JOIN Boxoffice AS bo ON movies.id = bo.Movie_id
-   ORDER BY bo.Rating DESC;
+3. SELECT Building, SUM(Years_employed) AS employee_years_by_building FROM Employees GROUP BY Building;
