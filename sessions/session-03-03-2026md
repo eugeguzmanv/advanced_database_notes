@@ -1,10 +1,10 @@
-# Session – 2026-02-17
+# Session – 03-03-2026
 
 ## Topics covered
-- Aggregate function
+- Window functions or analysis
 
 ## What I understood
-- How a query can contain aggregate functions within itself and its use cases
+- How to use analytic functions and create complex queries
 
 ## What is still confusing
 - N/A
