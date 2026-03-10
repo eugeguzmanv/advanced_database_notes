@@ -1,1 +1,0 @@
-This is the challenge 2 readme
