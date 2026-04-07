@@ -1,0 +1,1 @@
+This is the challenge 6 readme
