@@ -1,0 +1,4 @@
+1. SELECT * FROM movies WHERE id = 6;
+2. SELECT * FROM movies WHERE year BETWEEN 2000 AND 2010
+3. SELECT * FROM movies WHERE year NOT BETWEEN 2000 AND 2010
+4. SELECT title, year FROM movies WHERE id IN(1,2,3,4,5)
