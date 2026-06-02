@@ -1,7 +1,7 @@
 This is the challenge 10 readme
 -- Lesson 05: Schema Backup & Restore
 -- File 08: Class Exercises (self-contained)
-
+comment for pr
 -- ============================================
 -- EXERCISE 1: Explore your schema
 -- ============================================
