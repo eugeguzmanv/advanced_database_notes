@@ -4,7 +4,7 @@
 -- List all the objects in your schema using user_objects
 -- Group by object_type and count them
 -- Which object types do you have? -> Index, Lob, Sequence, Table
-
+--comment for pr
 SELECT object_type, COUNT(*) AS cnt
 FROM user_objects
 GROUP BY object_type
