@@ -1,377 +1,448 @@
-### Today's Challenge
-Apply the files one by one on the collab inlude graph for your sql answers
-
- 
-
+# Today's Challenge
 -- ============================================================
--- Lesson 07: KPI Dashboards
--- File: 01_enrich_schema.sql
--- Purpose: Enrich the tasks table with analytics columns
+-- Lesson 08: ETL + Data Warehouse
+-- File: 01_setup_oltp.sql
+-- Purpose: Create source OLTP tables + seed data
 --
--- Run this in your FreeSQL worksheet after Lesson 06 schema.
+-- Self-contained — no dependencies on previous lessons.
+-- Run this on https://freesql.com/
 -- ============================================================
 
--- Add columns needed for KPI analysis
-ALTER TABLE tasks ADD (
-    priority      VARCHAR2(10)  DEFAULT 'medium',
-    due_date      DATE,
-    completed_at  TIMESTAMP,
-    tags          VARCHAR2(200)
+-- Clean up if re-running (child before parent)
+BEGIN EXECUTE IMMEDIATE 'DROP TABLE task_assignments'; EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN EXECUTE IMMEDIATE 'DROP TABLE tasks';     EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN EXECUTE IMMEDIATE 'DROP TABLE users';     EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+
+-- ============================================================
+-- USERS — who works on tasks
+-- ============================================================
+CREATE TABLE users (
+    id          NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name        VARCHAR2(100) NOT NULL,
+    email       VARCHAR2(200) NOT NULL,
+    team        VARCHAR2(50)  NOT NULL,
+    role        VARCHAR2(30)  DEFAULT 'developer' NOT NULL,
+    created_at  TIMESTAMP     DEFAULT SYSTIMESTAMP
 );
 
--- Add check constraint for valid priorities
-ALTER TABLE tasks ADD CONSTRAINT chk_task_priority
-    CHECK (priority IN ('low', 'medium', 'high', 'critical'));
+-- ============================================================
+-- TASKS — what needs to be done
+-- ============================================================
+CREATE TABLE tasks (
+    id            NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    title         VARCHAR2(200)  NOT NULL,
+    description   VARCHAR2(500),
+    status        VARCHAR2(20)   DEFAULT 'open' NOT NULL,
+    priority      VARCHAR2(10)   DEFAULT 'medium' NOT NULL,
+    assigned_to   NUMBER         REFERENCES users(id),
+    created_by    NUMBER         REFERENCES users(id),
+    created_at    TIMESTAMP      DEFAULT SYSTIMESTAMP,
+    updated_at    TIMESTAMP      DEFAULT SYSTIMESTAMP,
+    completed_at  TIMESTAMP,
+    CONSTRAINT chk_task_status CHECK (
+        status IN ('open', 'in_progress', 'blocked', 'completed', 'cancelled')
+    ),
+    CONSTRAINT chk_task_priority CHECK (
+        priority IN ('low', 'medium', 'high', 'critical')
+    )
+);
 
--- Add check constraint for valid statuses (expanded)
-ALTER TABLE tasks DROP CONSTRAINT chk_task_status;
-ALTER TABLE tasks ADD CONSTRAINT chk_task_status
-    CHECK (status IN ('open', 'in_progress', 'blocked', 'completed', 'cancelled'));
+-- ============================================================
+-- TASK_ASSIGNMENTS — historical record of task assignments
+-- Tracks who was assigned to each task and when.
+-- Populated automatically by trg_task_assignment_log.
+-- ============================================================
+CREATE TABLE task_assignments (
+    assignment_id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    task_id       NUMBER       NOT NULL REFERENCES tasks(id),
+    assigned_to   NUMBER       NOT NULL REFERENCES users(id),
+    assigned_by   NUMBER       REFERENCES users(id),
+    valid_from    TIMESTAMP    NOT NULL,
+    valid_to      TIMESTAMP    -- NULL = current assignment
+);
+
+-- Index for date-range lookups (find who was assigned at a point in time)
+CREATE INDEX idx_assignments_lookup
+ON task_assignments (task_id, valid_from, valid_to);
+-- ============================================================
+-- TRIGGER: Automatically log task assignments
+-- Fires on INSERT (initial assignment) and UPDATE (reassignment)
+-- ============================================================
+CREATE OR REPLACE TRIGGER trg_task_assignment_log
+    AFTER INSERT OR UPDATE OF assigned_to ON tasks
+    FOR EACH ROW
+BEGIN
+    IF INSERTING THEN
+        -- Initial assignment: log who was assigned at creation time
+        INSERT INTO task_assignments (task_id, assigned_to, assigned_by, valid_from)
+        VALUES (:NEW.id, :NEW.assigned_to, :NEW.created_by, :NEW.created_at);
+    ELSIF UPDATING THEN
+        -- Close the previous assignment
+        UPDATE task_assignments
+           SET valid_to = :NEW.updated_at
+         WHERE task_id = :OLD.id
+           AND valid_to IS NULL;
+
+        -- Open the new assignment
+        INSERT INTO task_assignments (task_id, assigned_to, assigned_by, valid_from)
+        VALUES (:NEW.id, :NEW.assigned_to, NULL, :NEW.updated_at);
+    END IF;
+END;
+/
+
+ 
+
+-- ============================================================
+-- SEED DATA — 8 users, 40 tasks across 3 months
+-- ============================================================
+
+-- Users
+INSERT INTO users (name, email, team, role) VALUES ('Alice Chen',   'alice@example.com',   'Platform',   'senior');
+INSERT INTO users (name, email, team, role) VALUES ('Bob Martinez', 'bob@example.com',     'Platform',   'developer');
+INSERT INTO users (name, email, team, role) VALUES ('Carol Smith',  'carol@example.com',   'Frontend',   'senior');
+INSERT INTO users (name, email, team, role) VALUES ('Dave Kim',     'dave@example.com',    'Frontend',   'developer');
+INSERT INTO users (name, email, team, role) VALUES ('Eve Johnson',  'eve@example.com',     'Data',       'senior');
+INSERT INTO users (name, email, team, role) VALUES ('Frank Lee',    'frank@example.com',   'Data',       'developer');
+INSERT INTO users (name, email, team, role) VALUES ('Grace Wang',   'grace@example.com',   'Platform',   'developer');
+INSERT INTO users (name, email, team, role) VALUES ('Henry Brown',  'henry@example.com',   'Frontend',   'developer');
+COMMIT;
+
+-- Tasks — spread across Feb–Apr 2026 with varied statuses and priorities
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Fix login redirect bug', 'Users redirected to home instead of dashboard after SSO login', 'completed', 'high', 1, 1, TIMESTAMP '2026-02-01 09:00:00', TIMESTAMP '2026-02-02 14:00:00', TIMESTAMP '2026-02-02 14:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Design new dashboard mockups', 'Create Figma mockups for analytics dashboard with KPI cards', 'completed', 'medium', 3, 3, TIMESTAMP '2026-02-03 10:00:00', TIMESTAMP '2026-02-10 16:00:00', TIMESTAMP '2026-02-10 16:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Upgrade numpy and pandas', 'Update to latest stable versions, fix breaking changes', 'completed', 'low', 5, 5, TIMESTAMP '2026-02-05 11:00:00', TIMESTAMP '2026-02-07 15:00:00', TIMESTAMP '2026-02-07 15:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('API rate limiting', 'Implement rate limiting on public API endpoints', 'completed', 'high', 1, 2, TIMESTAMP '2026-02-06 09:00:00', TIMESTAMP '2026-02-12 11:00:00', TIMESTAMP '2026-02-12 11:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Write unit tests for auth', 'Cover login, logout, token refresh, and password reset flows', 'completed', 'medium', 2, 1, TIMESTAMP '2026-02-07 10:00:00', TIMESTAMP '2026-02-14 17:00:00', TIMESTAMP '2026-02-14 17:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Database backup automation', 'Automate daily backup to S3 with 30-day retention policy', 'completed', 'medium', 1, 5, TIMESTAMP '2026-02-08 11:00:00', TIMESTAMP '2026-02-10 10:00:00', TIMESTAMP '2026-02-10 10:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Mobile responsive navigation', 'Side menu does not collapse on screens under 768px', 'completed', 'high', 3, 4, TIMESTAMP '2026-02-10 09:00:00', TIMESTAMP '2026-02-14 16:00:00', TIMESTAMP '2026-02-14 16:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('User profile page', 'Allow users to edit avatar, bio, and notification preferences', 'completed', 'low', 4, 3, TIMESTAMP '2026-02-12 10:00:00', TIMESTAMP '2026-02-20 14:00:00', TIMESTAMP '2026-02-20 14:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Optimize report query', 'Weekly report generation takes 45 seconds — needs optimization', 'completed', 'critical', 5, 6, TIMESTAMP '2026-02-14 09:00:00', TIMESTAMP '2026-02-15 18:00:00', TIMESTAMP '2026-02-15 18:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Set up CI/CD pipeline', 'GitHub Actions workflow for automated test + deploy', 'completed', 'medium', 2, 1, TIMESTAMP '2026-02-17 09:00:00', TIMESTAMP '2026-02-25 12:00:00', TIMESTAMP '2026-02-25 12:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Error tracking integration', 'Connect Sentry for production error alerting', 'completed', 'medium', 1, 2, TIMESTAMP '2026-02-19 10:00:00', TIMESTAMP '2026-02-24 15:00:00', TIMESTAMP '2026-02-24 15:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Dark mode toggle', 'Add dark/light theme switcher with localStorage persistence', 'completed', 'low', 3, 4, TIMESTAMP '2026-02-21 11:00:00', TIMESTAMP '2026-03-01 16:00:00', TIMESTAMP '2026-03-01 16:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Refactor user service', 'Split monolithic user service into auth, profile, and admin modules', 'completed', 'medium', 1, 2, TIMESTAMP '2026-02-24 09:00:00', TIMESTAMP '2026-03-05 17:00:00', TIMESTAMP '2026-03-05 17:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('SQL query performance audit', 'Review slow queries from pg_stat_statements, optimize top 5', 'completed', 'high', 5, 6, TIMESTAMP '2026-02-26 10:00:00', TIMESTAMP '2026-03-02 14:00:00', TIMESTAMP '2026-03-02 14:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Add search functionality', 'Implement full-text search on tasks and comments', 'completed', 'medium', 2, 1, TIMESTAMP '2026-02-28 11:00:00', TIMESTAMP '2026-03-10 16:00:00', TIMESTAMP '2026-03-10 16:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Email notification service', 'Send email alerts when tasks are assigned or overdue', 'completed', 'medium', 7, 1, TIMESTAMP '2026-03-02 09:00:00', TIMESTAMP '2026-03-12 15:00:00', TIMESTAMP '2026-03-12 15:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Loading state components', 'Add skeleton loaders and spinner components to all data views', 'completed', 'low', 4, 3, TIMESTAMP '2026-03-04 10:00:00', TIMESTAMP '2026-03-11 14:00:00', TIMESTAMP '2026-03-11 14:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('API documentation', 'Document all REST endpoints with request/response examples', 'completed', 'low', 8, 3, TIMESTAMP '2026-03-06 11:00:00', TIMESTAMP '2026-03-18 17:00:00', TIMESTAMP '2026-03-18 17:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Implement caching layer', 'Add Redis caching for frequently accessed API endpoints', 'completed', 'high', 1, 2, TIMESTAMP '2026-03-09 09:00:00', TIMESTAMP '2026-03-16 12:00:00', TIMESTAMP '2026-03-16 12:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Data export feature', 'Allow users to export task data as CSV and Excel', 'completed', 'medium', 6, 5, TIMESTAMP '2026-03-11 10:00:00', TIMESTAMP '2026-03-20 16:00:00', TIMESTAMP '2026-03-20 16:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Password reset flow', 'Implement secure password reset with email token', 'completed', 'critical', 1, 2, TIMESTAMP '2026-03-13 09:00:00', TIMESTAMP '2026-03-15 11:00:00', TIMESTAMP '2026-03-15 11:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Notification preferences UI', 'Build settings page for email and in-app notification toggles', 'completed', 'medium', 3, 4, TIMESTAMP '2026-03-16 10:00:00', TIMESTAMP '2026-03-23 15:00:00', TIMESTAMP '2026-03-23 15:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Batch task operations', 'Allow selecting multiple tasks and changing status/assignee in bulk', 'completed', 'medium', 2, 1, TIMESTAMP '2026-03-18 11:00:00', TIMESTAMP '2026-03-27 14:00:00', TIMESTAMP '2026-03-27 14:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Performance monitoring dashboard', 'Build real-time dashboard for API latency and error rates', 'completed', 'high', 5, 6, TIMESTAMP '2026-03-20 09:00:00', TIMESTAMP '2026-03-30 17:00:00', TIMESTAMP '2026-03-30 17:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Keyboard shortcuts', 'Add keyboard navigation shortcuts for power users', 'completed', 'low', 4, 3, TIMESTAMP '2026-03-23 10:00:00', TIMESTAMP '2026-03-28 16:00:00', TIMESTAMP '2026-03-28 16:00:00');
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Webhook integration', 'Allow external services to subscribe to task events via webhooks', 'in_progress', 'medium', 2, 1, TIMESTAMP '2026-03-25 11:00:00', TIMESTAMP '2026-03-25 11:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Role-based access control', 'Implement admin, manager, and developer roles with permissions', 'in_progress', 'high', 1, 2, TIMESTAMP '2026-03-27 09:00:00', TIMESTAMP '2026-03-27 09:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Drag-and-drop task board', 'Kanban-style board with drag-and-drop status changes', 'in_progress', 'medium', 3, 4, TIMESTAMP '2026-03-30 10:00:00', TIMESTAMP '2026-03-30 10:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Task dependencies', 'Allow tasks to depend on other tasks (blocked by relationship)', 'open', 'medium', 2, 1, TIMESTAMP '2026-04-01 11:00:00', TIMESTAMP '2026-04-01 11:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Real-time collaboration', 'WebSocket-based live updates when multiple users view the same task', 'open', 'high', 7, 1, TIMESTAMP '2026-04-02 09:00:00', TIMESTAMP '2026-04-02 09:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Mobile app push notifications', 'Push notifications for task assignments and due dates', 'open', 'medium', 8, 3, TIMESTAMP '2026-04-03 10:00:00', TIMESTAMP '2026-04-03 10:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Automated task assignment', 'AI-based assignment based on workload and expertise', 'open', 'low', 5, 6, TIMESTAMP '2026-04-04 11:00:00', TIMESTAMP '2026-04-04 11:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Time tracking integration', 'Allow logging hours spent on each task', 'blocked', 'medium', 6, 5, TIMESTAMP '2026-04-05 09:00:00', TIMESTAMP '2026-04-05 09:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Multi-language support', 'i18n framework with Spanish and French translations', 'blocked', 'low', 4, 3, TIMESTAMP '2026-04-06 10:00:00', TIMESTAMP '2026-04-06 10:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Audit log viewer', 'Admin interface to browse and filter audit logs', 'open', 'medium', 1, 2, TIMESTAMP '2026-04-07 11:00:00', TIMESTAMP '2026-04-07 11:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('SAML/SSO integration', 'Enterprise SSO via SAML for company-wide deployment', 'open', 'high', 1, 2, TIMESTAMP '2026-04-08 09:00:00', TIMESTAMP '2026-04-08 09:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Custom fields for tasks', 'Allow admins to add custom fields to task forms', 'open', 'medium', 3, 4, TIMESTAMP '2026-04-09 10:00:00', TIMESTAMP '2026-04-09 10:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Weekly digest email', 'Automated weekly summary of team activity and completed tasks', 'cancelled', 'low', 5, 6, TIMESTAMP '2026-04-10 11:00:00', TIMESTAMP '2026-04-12 14:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Gantt chart view', 'Timeline view for project planning and milestone tracking', 'cancelled', 'low', 3, 4, TIMESTAMP '2026-04-11 09:00:00', TIMESTAMP '2026-04-13 10:00:00', NULL);
+INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, created_at, updated_at, completed_at) VALUES
+('Legacy data migration', 'Migrate 50K tasks from old system with field mapping', 'cancelled', 'medium', 1, 5, TIMESTAMP '2026-04-12 10:00:00', TIMESTAMP '2026-04-14 16:00:00', NULL);
+COMMIT;
+
+-- ============================================================
+-- DEMO: Task reassignment
+-- Task 5 ("Write unit tests for auth") was created by Alice,
+-- initially assigned to Bob. On Feb 10, it was reassigned to Grace.
+-- The trigger automatically logs this change.
+-- ============================================================
+
+-- Show the assignment before reassignment
+SELECT ta.task_id, t.title,
+       u_from.name AS assigned_to,
+       ta.valid_from
+FROM task_assignments ta
+JOIN tasks t ON t.id = ta.task_id
+JOIN users u_from ON u_from.id = ta.assigned_to
+WHERE ta.task_id = 5 AND ta.valid_to IS NULL;
+
+-- Reassign task 5 from Bob (id=2) to Grace (id=7)
+UPDATE tasks
+SET assigned_to = 7,
+    updated_at  = TIMESTAMP '2026-02-10 10:00:00'
+WHERE id = 5;
 
 COMMIT;
+
+-- Show the full assignment history for task 5
+SELECT ta.task_id, t.title,
+       u.name AS assigned_to,
+       ta.valid_from,
+       ta.valid_to,
+       CASE WHEN ta.valid_to IS NULL THEN 'current' ELSE 'historical' END AS status
+FROM task_assignments ta
+JOIN tasks t ON t.id = ta.task_id
+JOIN users u ON u.id = ta.assigned_to
+WHERE ta.task_id = 5
+ORDER BY ta.valid_from;
 
 -- Verify
-SELECT column_name, data_type, nullable
-FROM   user_tab_columns
-WHERE  table_name = 'TASKS'
-ORDER  BY column_id;
+SELECT 'users: ' || COUNT(*) AS count FROM users
+UNION ALL
+SELECT 'tasks: ' || COUNT(*) AS count FROM tasks
+UNION ALL
+SELECT 'task_assignments: ' || COUNT(*) AS count FROM task_assignments;
 
  
 
+__________________________
+
 -- ============================================================
--- Lesson 07: KPI Dashboards
--- File: 02_seed_dashboard_data.sql
--- Purpose: Generate 36 realistic tasks across 2 weeks
+-- Lesson 08: ETL + Data Warehouse
+-- File: 02_setup_dw.sql
+-- Purpose: Create star schema tables for the data warehouse
 --
--- Run this in your FreeSQL worksheet.
+-- Self-contained — run after 01_setup_oltp.sql.
+-- Run this on https://freesql.com/
 -- ============================================================
 
--- First, clear existing tasks (keep teams and users from Lesson 06)
-DELETE FROM tasks;
+-- Clean up if re-running (child before parent)
+BEGIN EXECUTE IMMEDIATE 'DROP TABLE fact_task_daily';  EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN EXECUTE IMMEDIATE 'DROP TABLE dim_status';       EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN EXECUTE IMMEDIATE 'DROP TABLE dim_date';         EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+BEGIN EXECUTE IMMEDIATE 'DROP TABLE dim_user';         EXCEPTION WHEN OTHERS THEN NULL; END;
+/
+
+-- ============================================================
+-- DIM_USER — user attributes (denormalized)
+-- Surrogate key separates DW from source system
+-- ============================================================
+CREATE TABLE dim_user (
+    user_key    NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    user_id     NUMBER       NOT NULL,  -- source system ID
+    name        VARCHAR2(100) NOT NULL,
+    email       VARCHAR2(200) NOT NULL,
+    team        VARCHAR2(50)  NOT NULL,
+    role        VARCHAR2(30)  NOT NULL,
+    CONSTRAINT uq_dim_user_source UNIQUE (user_id)
+);
+
+-- ============================================================
+-- DIM_DATE — calendar hierarchy
+-- Pre-computed attributes make date-based queries trivial
+-- ============================================================
+CREATE TABLE dim_date (
+    date_key    NUMBER PRIMARY KEY,  -- integer: YYYYMMDD
+    full_date   DATE       NOT NULL,
+    year        NUMBER(4)  NOT NULL,
+    quarter     NUMBER(1)  NOT NULL,
+    month       NUMBER(2)  NOT NULL,
+    month_name  VARCHAR2(10) NOT NULL,
+    day         NUMBER(2)  NOT NULL,
+    day_name    VARCHAR2(10) NOT NULL,
+    is_weekend  NUMBER(1)  NOT NULL,  -- 1 = Saturday/Sunday
+    CONSTRAINT uq_dim_date UNIQUE (full_date)
+);
+
+-- ============================================================
+-- DIM_STATUS — task status categories
+-- Small dimension, but separating it enables category grouping
+-- ============================================================
+CREATE TABLE dim_status (
+    status_key  NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    status_name VARCHAR2(20) NOT NULL,
+    category    VARCHAR2(20) NOT NULL,  -- active, done, cancelled
+    CONSTRAINT uq_dim_status UNIQUE (status_name)
+);
+
+-- Seed statuses
+INSERT INTO dim_status (status_name, category) VALUES ('open',        'active');
+INSERT INTO dim_status (status_name, category) VALUES ('in_progress', 'active');
+INSERT INTO dim_status (status_name, category) VALUES ('blocked',     'active');
+INSERT INTO dim_status (status_name, category) VALUES ('completed',   'done');
+INSERT INTO dim_status (status_name, category) VALUES ('cancelled',   'cancelled');
 COMMIT;
 
 -- ============================================================
--- 36 REALISTIC TASKS
+-- FACT_TASK_DAILY — daily task metrics
+-- One row per (date, user, status, priority) combination
+-- This is the grain: daily snapshot by user and status
+--
+-- NOTE: user_key reflects the HISTORICAL assignee from
+-- task_assignments (OLTP), NOT the current assigned_to.
+-- If a task was reassigned mid-life, creation credit goes
+-- to the original assignee, completion credit to the
+-- assignee at completion time.
 -- ============================================================
--- Spread across 14 days with varied statuses, priorities, assignees
--- Includes cancelled tasks and overdue tasks for exercise coverage
+CREATE TABLE fact_task_daily (
+    fact_key          NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    date_key          NUMBER       NOT NULL REFERENCES dim_date(date_key),
+    user_key          NUMBER       NOT NULL REFERENCES dim_user(user_key),
+    status_key        NUMBER       NOT NULL REFERENCES dim_status(status_key),
+    priority          VARCHAR2(10) NOT NULL,
+    tasks_created     NUMBER       DEFAULT 0,
+    tasks_completed   NUMBER       DEFAULT 0,
+    avg_completion_hours NUMBER    DEFAULT NULL,
+    CONSTRAINT uq_fact UNIQUE (date_key, user_key, status_key, priority)
+);
 
-INSERT INTO tasks (title, description, status, priority, assigned_to, created_at, due_date, completed_at, tags) VALUES
-('Fix login bug', 'Users cannot log in with SSO after password reset', 'completed', 'high', 1, TIMESTAMP '2026-05-01 09:00:00', DATE '2026-05-03', TIMESTAMP '2026-05-02 14:30:00', 'bug,sso,auth'),
-('Design new dashboard', 'Create mockups for analytics page with KPI cards', 'in_progress', 'medium', 3, TIMESTAMP '2026-05-01 10:00:00', DATE '2026-05-10', NULL, 'design,ui,dashboard'),
-('Update dependencies', 'Upgrade numpy and pandas to latest stable', 'completed', 'low', 2, TIMESTAMP '2026-05-01 11:00:00', DATE '2026-05-05', TIMESTAMP '2026-05-04 16:00:00', 'maintenance,deps'),
-('API rate limiting', 'Implement rate limiting on public endpoints', 'open', 'high', 1, TIMESTAMP '2026-05-02 09:00:00', DATE '2026-05-08', NULL, 'api,security,backend'),
-('Write unit tests for auth', 'Cover login, logout, token refresh flows', 'in_progress', 'medium', 2, TIMESTAMP '2026-05-02 10:00:00', DATE '2026-05-09', NULL, 'testing,auth,qa'),
-('Database backup script', 'Automate daily backup to S3 with retention', 'completed', 'medium', 1, TIMESTAMP '2026-05-02 11:00:00', DATE '2026-05-04', TIMESTAMP '2026-05-03 10:00:00', 'devops,backup,s3'),
-('Mobile responsive nav', 'Menu does not collapse on screens < 768px', 'blocked', 'high', 3, TIMESTAMP '2026-05-03 09:00:00', DATE '2026-05-07', NULL, 'bug,mobile,ui,css'),
-('User profile page', 'Allow users to edit avatar and bio', 'open', 'low', 3, TIMESTAMP '2026-05-03 10:00:00', DATE '2026-05-15', NULL, 'feature,profile,frontend'),
-('Optimize slow query', 'Report generation takes 45 seconds', 'completed', 'critical', 1, TIMESTAMP '2026-05-03 11:00:00', DATE '2026-05-04', TIMESTAMP '2026-05-03 18:00:00', 'performance,sql,optimization'),
-('Set up CI/CD pipeline', 'GitHub Actions for test + deploy', 'in_progress', 'medium', 2, TIMESTAMP '2026-05-04 09:00:00', DATE '2026-05-12', NULL, 'devops,cicd,github'),
-('Error tracking integration', 'Connect Sentry for production error alerts', 'open', 'medium', 1, TIMESTAMP '2026-05-04 10:00:00', DATE '2026-05-11', NULL, 'monitoring,sentry,ops'),
-('Dark mode toggle', 'Add theme switcher with CSS variables', 'completed', 'low', 3, TIMESTAMP '2026-05-04 11:00:00', DATE '2026-05-06', TIMESTAMP '2026-05-05 15:00:00', 'feature,ui,theming'),
-('Password strength meter', 'Visual indicator for password complexity', 'open', 'low', 2, TIMESTAMP '2026-05-05 09:00:00', DATE '2026-05-14', NULL, 'feature,auth,frontend'),
-('Export to CSV', 'Allow users to download report as CSV', 'in_progress', 'medium', 3, TIMESTAMP '2026-05-05 10:00:00', DATE '2026-05-13', NULL, 'feature,export,reporting'),
-('Redis caching layer', 'Cache frequent queries to reduce DB load', 'open', 'high', 1, TIMESTAMP '2026-05-05 11:00:00', DATE '2026-05-10', NULL, 'backend,redis,performance'),
-('Email notification service', 'Send task assignment emails via SendGrid', 'completed', 'medium', 2, TIMESTAMP '2026-05-06 09:00:00', DATE '2026-05-08', TIMESTAMP '2026-05-07 12:00:00', 'feature,email,notifications'),
-('Audit log table', 'Track all changes to tasks with timestamps', 'in_progress', 'medium', 1, TIMESTAMP '2026-05-06 10:00:00', DATE '2026-05-15', NULL, 'feature,audit,logging'),
-('Two-factor auth', 'Add TOTP support for admin accounts', 'open', 'critical', 2, TIMESTAMP '2026-05-06 11:00:00', DATE '2026-05-09', NULL, 'feature,security,auth'),
-('Load testing script', 'Simulate 1000 concurrent users with k6', 'completed', 'medium', 1, TIMESTAMP '2026-05-07 09:00:00', DATE '2026-05-08', TIMESTAMP '2026-05-07 17:00:00', 'testing,performance,k6'),
-('Documentation site', 'Set up MkDocs for API documentation', 'open', 'low', 3, TIMESTAMP '2026-05-07 10:00:00', DATE '2026-05-20', NULL, 'docs,mkdocs,technical-writing'),
-('Fix memory leak', 'Node process grows to 2GB after 24 hours', 'blocked', 'critical', 1, TIMESTAMP '2026-05-07 11:00:00', DATE '2026-05-09', NULL, 'bug,performance,memory'),
-('Webhook integrations', 'Allow third-party services to subscribe to events', 'open', 'medium', 2, TIMESTAMP '2026-05-08 09:00:00', DATE '2026-05-16', NULL, 'feature,api,integrations'),
-('Search autocomplete', 'Typeahead search with debounced API calls', 'in_progress', 'low', 3, TIMESTAMP '2026-05-08 10:00:00', DATE '2026-05-14', NULL, 'feature,search,frontend'),
-('GDPR data export', 'Allow users to download all their data', 'open', 'high', 1, TIMESTAMP '2026-05-08 11:00:00', DATE '2026-05-12', NULL, 'compliance,gdpr,privacy'),
-('Slack bot integration', 'Post task updates to team Slack channel', 'completed', 'low', 2, TIMESTAMP '2026-05-09 09:00:00', DATE '2026-05-11', TIMESTAMP '2026-05-10 11:00:00', 'feature,slack,bot'),
-('Database migration tool', 'Evaluate Flyway vs Liquibase for schema changes', 'open', 'medium', 1, TIMESTAMP '2026-05-09 10:00:00', DATE '2026-05-17', NULL, 'research,db,migrations'),
-('Image upload resizing', 'Resize avatars to 256x256 on upload', 'in_progress', 'low', 3, TIMESTAMP '2026-05-09 11:00:00', DATE '2026-05-13', NULL, 'feature,images,processing'),
-('Session timeout bug', 'Users stay logged in after 30 days', 'open', 'high', 2, TIMESTAMP '2026-05-10 09:00:00', DATE '2026-05-11', NULL, 'bug,auth,sessions'),
-('Analytics event tracking', 'Track page views and clicks with Mixpanel', 'completed', 'medium', 3, TIMESTAMP '2026-05-10 10:00:00', DATE '2026-05-12', TIMESTAMP '2026-05-11 09:00:00', 'feature,analytics,tracking'),
-('Kubernetes deployment', 'Migrate from EC2 to EKS with Helm charts', 'open', 'critical', 1, TIMESTAMP '2026-05-10 11:00:00', DATE '2026-05-15', NULL, 'devops,k8s,infrastructure'),
-
--- ============================================================
--- ADDITIONAL TASKS FOR EXERCISE COVERAGE
--- ============================================================
--- Cancelled tasks (for completion_rate calculation in EXERCISE 3)
-('Legacy API deprecation', 'Sunset the v1 API endpoints', 'cancelled', 'low', 2, TIMESTAMP '2026-05-01 08:00:00', DATE '2026-05-20', NULL, 'api,deprecation,legacy'),
-('Manual data migration', 'One-time script to migrate old records', 'cancelled', 'medium', 1, TIMESTAMP '2026-05-02 08:00:00', DATE '2026-05-10', NULL, 'migration,data,one-time'),
-('Third-party auth provider', 'Integrate with Okta for enterprise SSO', 'cancelled', 'high', 3, TIMESTAMP '2026-05-03 08:00:00', DATE '2026-05-18', NULL, 'auth,sso,enterprise'),
-
--- Overdue tasks (for EXERCISE 5 — overdue report with severity)
-('Security audit remediation', 'Fix findings from Q1 penetration test', 'open', 'critical', 1, TIMESTAMP '2026-05-01 09:00:00', DATE '2026-05-05', NULL, 'security,audit,compliance'),
-('Customer data retention policy', 'Implement automatic data purging', 'in_progress', 'high', 2, TIMESTAMP '2026-05-02 09:00:00', DATE '2026-05-06', NULL, 'compliance,gdpr,data'),
-('Payment gateway integration', 'Add Stripe support for subscriptions', 'blocked', 'medium', 3, TIMESTAMP '2026-05-03 09:00:00', DATE '2026-05-07', NULL, 'payments,stripe,billing'),
-('Performance regression fix', 'Query latency spike after last deploy', 'open', 'critical', 1, TIMESTAMP '2026-05-04 09:00:00', DATE '2026-05-08', NULL, 'performance,regression,sql');
-
-COMMIT;
-
--- Verify counts
-SELECT status, COUNT(*) AS task_count
-FROM   tasks
-GROUP  BY status
-ORDER  BY task_count DESC;
+-- Verify
+SELECT 'dim_user: '   || COUNT(*) FROM dim_user
+UNION ALL
+SELECT 'dim_status: ' || COUNT(*) FROM dim_status
+UNION ALL
+SELECT 'dim_date: '   || COUNT(*) FROM dim_date;
+-- (dim_date will be populated by the ETL pipeline)
 
  
 
  
 
--- ============================================================
--- Lesson 07: KPI Dashboards — Class Exercises
--- File: 06_exercises.sql
--- Purpose: Practice defining KPIs, writing queries, and handling edge cases
---
--- Instructions: Open this file in your FreeSQL worksheet.
--- For each exercise, write your query below the prompt, then run it.
--- There is no "autograder" — correctness is determined by whether
--- the query matches the KPI contract YOU defined.
--- ============================================================
+ 
 
--- ============================================================
--- PART A: The KPI Contract (Conceptual)
--- ============================================================
--- Before writing any query, answer these for EACH exercise:
---
--- 1. What is the business question?
--- 2. What is the exact definition? (Include every filter, every join)
--- 3. What are the edge cases? (NULLs, cancelled tasks, unassigned tasks, etc.)
--- 4. What is the unit? (Count, percentage, hours, dollars?)
--- 5. What would make this metric misleading?
---
--- Write your answers as SQL comments above each query.
--- A query without a contract is just a number. A query WITH a contract
--- is a metric the business can trust.
---
--- Tom Kyte's rule: "If you cannot explain the metric to a non-technical
--- person in one sentence, your query is wrong."
+-------
 
+ 
 
--- ============================================================
--- EXERCISE 1: Define "Team Velocity"
--- ============================================================
---
--- Business context: Management wants to compare how fast each team
--- completes work. They ask for "team velocity."
---
--- YOUR TASK:
--- 1. Define the KPI contract in comments. What EXACTLY does "velocity" mean?
---    Is it tasks completed per day? Per person? Per story point?
---    (We do not have story points — how does that change the definition?)
--- 2. Write a query that shows each team's velocity with your chosen definition.
--- 3. Add a column that flags teams with velocity below the overall average.
---
--- Edge case to consider: The Product team has fewer people than Engineering.
--- Should velocity be normalized per team member? What are the pros and cons?
+# Lesson 08: Exercise — Assignment History
 
--- [Write your contract here as a SQL comment]
--- [Write your query below]
+A support ticketing system. Tickets get reassigned between agents. You need
+to track who was assigned when the ticket was created vs when it was resolved.
 
+---
 
--- ============================================================
--- EXERCISE 2: Define "On-Time Delivery Rate"
--- ============================================================
---
--- Business context: The product manager wants to know: "Do we meet
--- our deadlines?" They ask for an "on-time delivery rate."
---
--- YOUR TASK:
--- 1. Define the KPI contract in comments. What does "on-time" mean?
---    Is it completed before due_date? Before end-of-day on due_date?
---    What about tasks with no due_date?
--- 2. Write a query that calculates the on-time delivery rate.
--- 3. Break it down by priority (critical, high, medium, low).
--- 4. Add a column showing the average "lateness" in hours for overdue tasks.
---
--- Edge case to consider: A task completed at 23:59 on the due date
--- vs. 00:01 the next day. Should both be "late"? Neither? Only one?
--- How does your choice affect the metric?
+## Step 1 — Source Tables (OLTP)
 
--- [Write your contract here as a SQL comment]
--- [Write your query below]
+Create two tables:
 
+**`tickets`** — current state of each ticket. Needs:
+- ticket_id, title, status, priority, created_at, resolved_at, assigned_to
 
--- ============================================================
--- PART B: Improve the Class KPIs
--- ============================================================
--- The KPIs from 03_kpi_queries.sql work, but they can be better.
--- For each exercise, identify the flaw and rewrite the query.
+**`ticket_assignments`** — history of who was assigned when. Needs:
+- assignment_id, ticket_id, assigned_to, assigned_by, valid_from, valid_to
 
+```sql
+-- Your code here
+```
 
--- ============================================================
--- EXERCISE 3: Improve "Tasks per Team" (KPI 2 from class)
--- ============================================================
---
--- FLAW: The original query counts ALL tasks assigned to users in a team,
--- including completed and cancelled tasks. A team with 50 completed tasks
--- and 0 open tasks looks "busy" but has no current workload.
---
--- YOUR TASK:
--- 1. Rewrite the query to show THREE columns per team:
---    - total_tasks (all time)
---    - active_tasks (open + in_progress + blocked)
---    - completion_rate (completed / total, excluding cancelled)
--- 2. Add a "health score" column: a CASE expression that labels each team
---    as 'Overloaded' (active_tasks > 10), 'Healthy' (5-10), or 'Underutilized' (< 5).
--- 3. Order by active_tasks DESC so the busiest teams appear first.
+---
 
--- Original (from 03_kpi_queries.sql — KPI 2):
--- SELECT t.name AS team_name,
---        COUNT(ts.id) AS task_count
--- FROM   teams t
--- LEFT   JOIN users u ON u.team_id = t.id
--- LEFT   JOIN tasks ts ON ts.assigned_to = u.id
--- GROUP  BY t.id, t.name
--- ORDER  BY task_count DESC;
---
--- Technique: LEFT JOIN chain. We start from teams (the dimension table)
--- and LEFT JOIN through users to tasks. This ensures teams with zero
--- tasks still appear (count = 0), which an INNER JOIN would hide.
+## Step 2 — Sample Data
 
--- [Write your improved query below]
+Insert at least 5 tickets. Make sure at least one gets reassigned (different
+person in `ticket_assignments` than the current `assigned_to` in `tickets`).
 
+```sql
+-- Your code here
+```
 
--- ============================================================
--- EXERCISE 4: Improve "Average Resolution Time" (KPI 5 from class)
--- ============================================================
---
--- FLAW: The original query averages ALL completed tasks together.
--- A critical bug fixed in 2 hours and a documentation update fixed in
--- 40 hours are averaged together. The metric hides priority differences.
---
--- YOUR TASK:
--- 1. Rewrite the query to show average resolution time BY PRIORITY.
--- 2. Add a column showing the MEDIAN resolution time per priority.
---    (Hint: Oracle 23ai supports PERCENTILE_CONT. Research it.)
--- 3. Add a column showing the FASTEST and SLOWEST resolution time per priority.
---    (Hint: MIN and MAX, but only if you want simple extremes.)
--- 4. Add a "target met" column: For each priority, define a target SLA
---    (critical = 24h, high = 72h, medium = 168h, low = 336h) and flag
---    whether the average meets the target.
---
--- Edge case: What if a priority has only 1 completed task? Is the average meaningful?
--- How should you communicate that in the result?
+---
 
--- Original (from 03_kpi_queries.sql — KPI 5):
--- SELECT ROUND(AVG(
---            EXTRACT(DAY FROM (completed_at - created_at)) * 24 +
---            EXTRACT(HOUR FROM (completed_at - created_at)) +
---            EXTRACT(MINUTE FROM (completed_at - created_at)) / 60
---        ), 1) AS avg_resolution_hours,
---        COUNT(*) AS completed_task_count
--- FROM   tasks
--- WHERE  status = 'completed'
---   AND  completed_at IS NOT NULL;
---
--- Technique: EXTRACT from INTERVAL. Oracle timestamp subtraction
--- returns a DAY TO SECOND interval. We break it into components.
--- We also report the count — an average of 2 tasks is not meaningful.
+## Step 3 — Trigger
 
--- [Write your improved query below]
+Write a trigger on `tickets` that:
+- On INSERT or UPDATE of `assigned_to`, logs the change to `ticket_assignments`
+- Closes the previous active assignment (sets its `valid_to`)
+- Inserts a new row with `valid_from = now()` and `valid_to = NULL`
 
+```sql
+-- Your code here
+```
 
--- ============================================================
--- EXERCISE 5: Improve "Overdue Tasks" (KPI 7 from class)
--- ============================================================
---
--- FLAW: The original query is a simple COUNT. It tells you HOW MANY
--- tasks are overdue, but not HOW OVERDUE, WHO owns them, or WHAT
--- the business impact is. A critical task 1 day late is different
--- from a low-priority task 30 days late.
---
--- YOUR TASK:
--- 1. Rewrite the query as a detailed report (not just a count).
---    Include: task title, assignee, team, priority, due_date,
---    days_overdue (calculated), and a "severity" column.
--- 2. Define severity as:
---    - 'CRITICAL': priority = 'critical' AND days_overdue > 0
---    - 'HIGH': priority = 'high' AND days_overdue > 2
---    - 'MEDIUM': priority = 'medium' AND days_overdue > 5
---    - 'LOW': everything else overdue
--- 3. Order by severity (most urgent first), then by days_overdue DESC.
--- 4. Add a summary row at the bottom (using ROLLUP or UNION) showing
---    total overdue count and average days overdue per severity level.
+**Test it:** Reassign a ticket, then query `ticket_assignments` to confirm
+both the old and new assignment are recorded.
 
--- Original (from 03_kpi_queries.sql — KPI 7):
--- SELECT COUNT(*) AS overdue_count
--- FROM   tasks
--- WHERE  due_date < TRUNC(SYSDATE)
---   AND  status NOT IN ('completed', 'cancelled')
---   AND  due_date IS NOT NULL;
---
--- Technique: TRUNC(SYSDATE) gives today at midnight. We compare dates
--- without time-of-day to avoid false positives (a task due "today"
--- at 23:59 should not be flagged at 09:00).
--- NULL check is defensive — always filter out unknown due dates.
+---
 
--- [Write your improved query below]
+## Step 4 — Data Warehouse Tables (Star Schema)
 
+Create two tables:
 
--- ============================================================
--- PART C: The "Bad KPI" Challenge
--- ============================================================
--- Below are three queries that return numbers. Each is a BAD KPI.
--- Your task: Identify WHY it is bad, then rewrite it correctly.
+**`dim_agent`** — agent details. Needs: agent_key, agent_name, team
 
+**`fact_ticket_daily`** — daily counts per agent/status/priority. Needs:
+date_key, agent_key, status, priority, tickets_created, tickets_resolved
 
--- ============================================================
--- EXERCISE 6: Fix the "Productivity Score"
--- ============================================================
---
--- BAD QUERY:
--- SELECT u.full_name, COUNT(ts.id) AS productivity_score
--- FROM users u
--- JOIN tasks ts ON ts.assigned_to = u.id
--- GROUP BY u.id, u.full_name
--- ORDER BY productivity_score DESC;
---
--- PROBLEM: ____________________________________________________
--- (What is wrong with this metric? Hint: Does it distinguish between
---  creating 10 tasks and completing 10 tasks? Does it handle unassigned
---  tasks? Does it account for task complexity or priority?)
---
--- REWRITE: Write a query that measures something actually meaningful.
--- Suggestion: "Completed tasks per day, weighted by priority."
+```sql
+-- Your code here
+```
 
--- [Write your analysis as a SQL comment]
--- [Write your rewritten query below]
+---
 
+## Step 5 — Populate dim_agent
 
--- ============================================================
--- EXERCISE 7: Fix the "Team Efficiency"
--- ============================================================
---
--- BAD QUERY:
--- SELECT t.name, AVG(ts.id) AS avg_task_id
--- FROM teams t
--- JOIN users u ON u.team_id = t.id
--- JOIN tasks ts ON ts.assigned_to = u.id
--- GROUP BY t.id, t.name;
---
--- PROBLEM: ____________________________________________________
--- (What is mathematically wrong here? What does "average task ID" mean?)
---
--- REWRITE: Write a query that measures actual team efficiency.
--- Suggestion: "Ratio of completed tasks to total tasks, per team."
+Insert 3-4 agents with their teams.
 
--- [Write your analysis as a SQL comment]
--- [Write your rewritten query below]
+```sql
+-- Your code here
+```
 
+---
 
--- ============================================================
--- EXERCISE 8: Fix the "Urgency Index"
--- ============================================================
---
--- BAD QUERY:
--- SELECT title, priority * 10 + DUE_DATE AS urgency_index
--- FROM tasks
--- ORDER BY urgency_index DESC;
---
--- PROBLEM: ____________________________________________________
--- (What is wrong with adding a string and a number? What is wrong with
---  multiplying a VARCHAR by 10? What should the query actually do?)
---
--- REWRITE: Write a query that creates a real urgency score.
--- Suggestion: Assign numeric weights to priority (critical=4, high=3,
--- medium=2, low=1) and add days_until_due (negative if overdue).
--- A higher score = more urgent.
+## Step 6 — ETL Logic (Colab)
 
--- [Write your analysis as a SQL comment]
--- [Write your rewritten query below]
+In your Colab notebook, write pandas code that:
+1. Extracts `tickets` and `ticket_assignments` from FreeSQL
+2. For each ticket, finds who was assigned at `created_at` using:
+   `valid_from <= created_at AND (valid_to IS NULL OR valid_to > created_at)`
+3. Same for `resolved_at`
+4. Groups by date, agent, status, priority and counts
+5. Inserts into `fact_ticket_daily`
+
+---
+
+## Step 7 — Verify
+
+Write a query joining `fact_ticket_daily` and `dim_agent` to show tickets
+created and resolved per agent per day. The reassigned ticket should show
+the original agent for creation and the new agent for resolution.
+
+```sql
+-- Your code here
+```
